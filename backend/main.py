@@ -5,6 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 import json
+import shutil
 
 load_dotenv()
 
@@ -76,10 +77,16 @@ def save_config(body: ConfigRequest):
     return {"saved": True}
 
 
+def _list_files() -> list[str]:
+    return sorted(
+        str(f.relative_to(DOCS_PATH)).replace("\\", "/")
+        for f in DOCS_PATH.rglob("*.md")
+    )
+
+
 @app.get("/list")
 def list_docs():
-    files = sorted(f.name for f in DOCS_PATH.rglob("*.md"))
-    return {"files": files}
+    return {"files": _list_files()}
 
 
 @app.get("/read")
@@ -88,6 +95,15 @@ def read_doc(filename: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
     return {"filename": filename, "content": path.read_text(encoding="utf-8")}
+
+
+class RenameRequest(BaseModel):
+    old_path: str
+    new_path: str
+
+
+class DeleteRequest(BaseModel):
+    path: str
 
 
 @app.post("/save")
@@ -103,3 +119,40 @@ def save_doc(body: SaveRequest):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body.content, encoding="utf-8", newline="\n")
     return {"saved": normalized}
+
+
+@app.post("/rename")
+def rename_doc(body: RenameRequest):
+    for p in (body.old_path, body.new_path):
+        norm = Path(p).as_posix()
+        if ".." in norm or norm.startswith("/"):
+            raise HTTPException(status_code=400, detail="Ruta inválida")
+
+    old_full = DOCS_PATH / body.old_path
+    new_full = DOCS_PATH / body.new_path
+
+    if not old_full.exists():
+        raise HTTPException(status_code=404, detail="Ruta de origen no encontrada")
+
+    new_full.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(old_full), str(new_full))
+
+    return {"files": _list_files()}
+
+
+@app.delete("/delete")
+def delete_doc(body: DeleteRequest):
+    norm = Path(body.path).as_posix()
+    if ".." in norm or norm.startswith("/"):
+        raise HTTPException(status_code=400, detail="Ruta inválida")
+
+    target = DOCS_PATH / body.path
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Ruta no encontrada")
+
+    if target.is_file():
+        target.unlink()
+    else:
+        shutil.rmtree(target)
+
+    return {"files": _list_files()}

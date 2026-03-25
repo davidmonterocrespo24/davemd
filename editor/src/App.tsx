@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
 import FileTree from "./components/FileTree";
 import Editor from "./components/Editor";
-import { listFiles, readFile, saveFile } from "./api";
+import { listFiles, readFile, saveFile, getConfig, renameFile, deleteFile } from "./api";
+import type { EditorConfig } from "./types";
 
 type Status = { msg: string; ok: boolean };
 
@@ -11,9 +12,11 @@ export default function App() {
   const [content, setContent] = useState("");
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(false);
+  const [config, setConfig] = useState<EditorConfig | null>(null);
 
   useEffect(() => {
     listFiles().then(setFiles).catch(() => setStatus({ msg: "No se pudo conectar al backend", ok: false }));
+    getConfig().then(setConfig).catch(() => setStatus({ msg: "No se pudo cargar la configuración", ok: false }));
   }, []);
 
   async function handleSelect(filename: string) {
@@ -41,23 +44,64 @@ export default function App() {
     }
   }, [activeFile, content]);
 
-  async function handleNew() {
-    const name = prompt("Nombre del archivo (ej: guia.md o carpeta/tema.md):");
-    if (!name) return;
+  async function handleNewFile(parentPath: string | null, name: string) {
     const filename = name.endsWith(".md") ? name : `${name}.md`;
+    const fullPath = parentPath ? `${parentPath}/${filename}` : filename;
+    const title = filename.replace(/\.md$/, "");
     try {
-      await saveFile(filename, `# ${filename.replace(/.*\//, "").replace(".md", "")}\n\nEscribe aquí...\n`);
+      await saveFile(fullPath, `# ${title}\n\nEscribe aquí...\n`);
       const updated = await listFiles();
       setFiles(updated);
-      handleSelect(filename);
+      handleSelect(fullPath);
     } catch (e: unknown) {
       setStatus({ msg: e instanceof Error ? e.message : "Error al crear", ok: false });
     }
   }
 
+  async function handleRename(oldPath: string, newName: string) {
+    const parts = oldPath.split("/");
+    const isFile = parts[parts.length - 1].endsWith(".md");
+    parts[parts.length - 1] = isFile
+      ? (newName.endsWith(".md") ? newName : `${newName}.md`)
+      : newName;
+    const newPath = parts.join("/");
+    try {
+      const updated = await renameFile(oldPath, newPath);
+      setFiles(updated);
+      if (activeFile === oldPath) setActiveFile(newPath);
+    } catch (e: unknown) {
+      setStatus({ msg: e instanceof Error ? e.message : "Error al renombrar", ok: false });
+      setTimeout(() => setStatus(null), 2500);
+    }
+  }
+
+  async function handleDelete(path: string, kind: "file" | "folder") {
+    const label = kind === "folder" ? "carpeta" : "archivo";
+    if (!window.confirm(`¿Eliminar ${label} "${path}"?`)) return;
+    try {
+      const updated = await deleteFile(path);
+      setFiles(updated);
+      const prefix = path + "/";
+      if (activeFile === path || (kind === "folder" && activeFile?.startsWith(prefix))) {
+        setActiveFile(null);
+        setContent("");
+      }
+    } catch (e: unknown) {
+      setStatus({ msg: e instanceof Error ? e.message : "Error al eliminar", ok: false });
+      setTimeout(() => setStatus(null), 2500);
+    }
+  }
+
   return (
     <div style={{ display: "flex", height: "100vh", background: "#1e1e1e" }}>
-      <FileTree files={files} active={activeFile} onSelect={handleSelect} onNew={handleNew} />
+      <FileTree
+          files={files}
+          active={activeFile}
+          onSelect={handleSelect}
+          onNewFile={handleNewFile}
+          onRename={handleRename}
+          onDelete={handleDelete}
+        />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Toolbar */}
         <div style={{
@@ -94,8 +138,8 @@ export default function App() {
         </div>
 
         {/* Editor */}
-        {activeFile && !loading ? (
-          <Editor content={content} onChange={setContent} onSave={handleSave} />
+        {activeFile && !loading && config ? (
+          <Editor content={content} onChange={setContent} onSave={handleSave} config={config} />
         ) : (
           <div style={{
             flex: 1,

@@ -1,20 +1,24 @@
 import MonacoEditor from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
+import type { EditorConfig } from "../types";
+import { mapConfigToMonaco, resolveTheme } from "../config";
 
 interface Props {
   content: string;
   onChange: (val: string) => void;
   onSave: () => void;
+  config: EditorConfig;
 }
 
-export default function Editor({ content, onChange, onSave }: Props) {
+export default function Editor({ content, onChange, onSave, config }: Props) {
   function handleMount(editorInstance: editor.IStandaloneCodeEditor) {
-    // Ctrl+S para guardar
     editorInstance.addCommand(
       2048 | 49, // KeyMod.CtrlCmd | KeyCode.KeyS
       onSave
     );
-    editorInstance.focus();
+    if (config.autoFocus) {
+      editorInstance.focus();
+    }
   }
 
   return (
@@ -22,15 +26,8 @@ export default function Editor({ content, onChange, onSave }: Props) {
       height="100%"
       defaultLanguage="markdown"
       value={content}
-      theme="vs-dark"
-      options={{
-        wordWrap: "on",
-        lineNumbers: "on",
-        minimap: { enabled: false },
-        fontSize: 14,
-        padding: { top: 16 },
-        scrollBeyondLastLine: false,
-      }}
+      theme={resolveTheme(config)}
+      options={mapConfigToMonaco(config)}
       onChange={(val) => onChange(val ?? "")}
       onMount={handleMount}
     />
