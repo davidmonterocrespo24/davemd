@@ -1,0 +1,6 @@
+editor/node_modules/*
+site/node_modules/*
+
+site/.vitepress/*
+__pycache__/
+*.pyc
