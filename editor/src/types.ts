@@ -1,5 +1,5 @@
 export type TreeNode =
-  | { kind: "folder"; name: string; path: string; children: TreeNode[] }
+  | { kind: "folder"; name: string; path: string; children: TreeNode[]; contentPath?: string }
   | { kind: "file"; name: string; path: string };
 
 export interface EditorConfig {

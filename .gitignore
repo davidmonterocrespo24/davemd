@@ -4,3 +4,4 @@ site/node_modules/*
 site/.vitepress/*
 __pycache__/
 *.pyc
+.claude/settings.local.json

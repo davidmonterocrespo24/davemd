@@ -28,8 +28,31 @@ export function buildTree(files: string[]): TreeNode[] {
     }
   }
 
+  resolveIndexFiles(roots);
   sortNodes(roots);
   return roots;
+}
+
+/**
+ * For each folder that contains a file named `folderName.md`,
+ * promote that file as the folder's "content" (contentPath) and hide it from children.
+ * This makes clicking the folder open its own document.
+ */
+function resolveIndexFiles(nodes: TreeNode[]): void {
+  for (const node of nodes) {
+    if (node.kind === "folder") {
+      const indexName = node.name + ".md";
+      const indexIdx = node.children.findIndex(
+        (c) => c.kind === "file" && c.name === indexName
+      );
+      if (indexIdx !== -1) {
+        const indexNode = node.children[indexIdx] as Extract<TreeNode, { kind: "file" }>;
+        node.contentPath = indexNode.path;
+        node.children.splice(indexIdx, 1);
+      }
+      resolveIndexFiles(node.children);
+    }
+  }
 }
 
 function sortNodes(nodes: TreeNode[]): void {

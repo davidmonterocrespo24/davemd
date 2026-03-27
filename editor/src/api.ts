@@ -61,6 +61,13 @@ export async function getConfig(): Promise<EditorConfig> {
   return res.json();
 }
 
+export async function searchDocs(q: string): Promise<Array<{ path: string; excerpt: string }>> {
+  const res = await fetch(`${BASE}/search?q=${encodeURIComponent(q)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.results;
+}
+
 export async function saveConfig(config: EditorConfig): Promise<void> {
   const res = await fetch(`${BASE}/config`, {
     method: "POST",

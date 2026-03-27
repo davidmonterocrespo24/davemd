@@ -140,6 +140,26 @@ def rename_doc(body: RenameRequest):
     return {"files": _list_files()}
 
 
+@app.get("/search")
+def search_docs(q: str):
+    results = []
+    for filepath in DOCS_PATH.rglob("*.md"):
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if q.lower() in content.lower():
+            excerpt = next(
+                (line.strip()[:120] for line in content.splitlines() if q.lower() in line.lower()),
+                ""
+            )
+            results.append({
+                "path": str(filepath.relative_to(DOCS_PATH)).replace("\\", "/"),
+                "excerpt": excerpt,
+            })
+    return {"results": results}
+
+
 @app.delete("/delete")
 def delete_doc(body: DeleteRequest):
     norm = Path(body.path).as_posix()

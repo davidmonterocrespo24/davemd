@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo, useCallback, memo } from "react";
 import type { TreeNode } from "../types";
 import { buildTree } from "../treeUtils";
 
@@ -7,12 +7,16 @@ interface Props {
   active: string | null;
   onSelect: (path: string) => void;
   onNewFile: (parentPath: string | null, name: string) => void;
+  onNewProject?: (parentPath: string | null, name: string) => void;
   onRename: (oldPath: string, newName: string) => void;
   onDelete: (path: string, kind: "file" | "folder") => void;
+  onMove: (fromPath: string, toFolderPath: string | null) => void;
+  projectFolders?: Set<string>;
 }
 
 interface CreatingState {
   parentPath: string | null;
+  kind?: "document" | "project";
 }
 
 interface EditingState {
@@ -26,10 +30,11 @@ interface MenuState {
   y: number;
 }
 
-// ── Inline create input ────────────────────────────────────────────────────────
+// ── Inline new-document input ──────────────────────────────────────────────────
 
-function NewItemRow({ depth, onConfirm, onCancel }: {
+function NewItemRow({ depth, isProject, onConfirm, onCancel }: {
   depth: number;
+  isProject?: boolean;
   onConfirm: (name: string) => void;
   onCancel: () => void;
 }) {
@@ -41,11 +46,11 @@ function NewItemRow({ depth, onConfirm, onCancel }: {
       paddingLeft: depth * 16 + 6, paddingTop: 3, paddingBottom: 3, paddingRight: 4,
     }}>
       <span style={{ width: 14, flexShrink: 0 }} />
-      <span style={{ marginRight: 5, fontSize: 13, flexShrink: 0 }}>📄</span>
+      <span style={{ marginRight: 5, fontSize: 13, flexShrink: 0 }}>{isProject ? "📋" : "📄"}</span>
       <input
         autoFocus
         value={value}
-        placeholder="nombre-archivo"
+        placeholder={isProject ? "nombre-proyecto" : "nombre-documento"}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
@@ -118,14 +123,12 @@ function ContextMenu({ x, y, items, onClose }: {
   onClose: () => void;
 }) {
   return (
-    <div
-      style={{
-        position: "fixed", top: y, left: x, zIndex: 200,
-        background: "#2d2d2d", border: "1px solid #444", borderRadius: 6,
-        padding: "4px 0", minWidth: 200,
-        boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
-      }}
-    >
+    <div style={{
+      position: "fixed", top: y, left: x, zIndex: 200,
+      background: "#2d2d2d", border: "1px solid #444", borderRadius: 6,
+      padding: "4px 0", minWidth: 200,
+      boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+    }}>
       {items.map((item) => (
         <button
           key={item.label}
@@ -156,6 +159,8 @@ interface RowProps {
   hovered: string | null;
   editing: EditingState | null;
   creating: CreatingState | null;
+  dragging: string | null;
+  dragOver: string | null;
   onToggleCollapse: (path: string) => void;
   onSetHovered: (path: string | null) => void;
   onSelect: (path: string) => void;
@@ -165,82 +170,139 @@ interface RowProps {
   onCancelEdit: () => void;
   onCommitCreate: (name: string) => void;
   onCancelCreate: () => void;
+  onDragStart: (path: string) => void;
+  onDragOver: (path: string) => void;
+  onDrop: (fromPath: string, targetPath: string, targetKind: "file" | "folder") => void;
+  onDragEnd: () => void;
   parentPath: string | null;
+  projectFolders?: Set<string>;
 }
 
-function TreeNodeRow({
-  node, depth, active, collapsed, hovered, editing, creating,
+const TreeNodeRow = memo(function TreeNodeRow({
+  node, depth, active, collapsed, hovered, editing, creating, dragging, dragOver,
   onToggleCollapse, onSetHovered, onSelect, onOpenMenu, onPlusClick,
-  onCommitRename, onCancelEdit, onCommitCreate, onCancelCreate, parentPath,
+  onCommitRename, onCancelEdit, onCommitCreate, onCancelCreate,
+  onDragStart, onDragOver, onDrop, onDragEnd, parentPath, projectFolders,
 }: RowProps) {
   const isFolder = node.kind === "folder";
+  const contentPath = isFolder ? node.contentPath : undefined;
   const isCollapsed = isFolder && collapsed.has(node.path);
-  const isActive = !isFolder && active === node.path;
+  const selectPath = isFolder ? contentPath : node.path;
+  const isActive = selectPath != null && active === selectPath;
   const isHovered = hovered === node.path;
   const isEditing = editing?.path === node.path;
   const showNewChild = isFolder && !isCollapsed && creating?.parentPath === node.path;
+  const isDragging = dragging === node.path;
+  const isDragOver = dragOver === node.path && dragging !== node.path;
 
-  function handleRowClick(e: React.MouseEvent) {
-    if (isEditing) return;
+  function handleArrowClick(e: React.MouseEvent) {
     e.stopPropagation();
     if (isFolder) onToggleCollapse(node.path);
-    else onSelect(node.path);
   }
 
-  const plusTarget = isFolder ? node.path : parentPath;
+  function handleNameClick(e: React.MouseEvent) {
+    if (isEditing) return;
+    e.stopPropagation();
+    if (isFolder) {
+      if (isCollapsed) onToggleCollapse(node.path);
+      if (contentPath) onSelect(contentPath);
+    } else {
+      onSelect(node.path);
+    }
+  }
 
   return (
     <>
       <div
+        draggable
         onMouseEnter={() => onSetHovered(node.path)}
         onMouseLeave={() => onSetHovered(null)}
-        onClick={handleRowClick}
+        onDragStart={(e) => {
+          e.stopPropagation();
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", node.path);
+          onDragStart(node.path);
+        }}
+        onDragEnd={(e) => { e.stopPropagation(); onDragEnd(); }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "move";
+          onDragOver(node.path);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const fromPath = e.dataTransfer.getData("text/plain");
+          onDrop(fromPath, node.path, isFolder ? "folder" : "file");
+        }}
         style={{
           display: "flex", alignItems: "center",
           paddingLeft: depth * 16 + 6, paddingRight: 4,
           paddingTop: 4, paddingBottom: 4,
-          cursor: isEditing ? "default" : "pointer",
           borderRadius: 4,
-          background: isActive ? "#2d4a7a" : isHovered ? "#2a2a2a" : "transparent",
+          opacity: isDragging ? 0.35 : 1,
+          background: isDragOver
+            ? "#1a3a5c"
+            : isActive ? "#2d4a7a"
+            : isHovered ? "#2a2a2a"
+            : "transparent",
+          outline: isDragOver ? "1px dashed #4ec9b0" : "none",
           color: isActive ? "#fff" : "#bbb",
           fontSize: 13, userSelect: "none",
+          cursor: "grab",
         }}
       >
-        {/* Arrow */}
-        <span style={{ width: 14, flexShrink: 0, color: "#666", fontSize: 10, marginRight: 2 }}>
+        {/* Arrow — toggles collapse */}
+        <span
+          onClick={handleArrowClick}
+          style={{
+            width: 14, flexShrink: 0, color: "#666", fontSize: 10, marginRight: 2,
+            cursor: isFolder ? "pointer" : "default",
+          }}
+        >
           {isFolder ? (isCollapsed ? "▶" : "▼") : ""}
         </span>
 
-        {/* Icon */}
-        <span style={{ marginRight: 5, fontSize: 13, flexShrink: 0 }}>
-          {isFolder ? "📁" : "📄"}
-        </span>
+        {/* Icon + Name — selects document */}
+        <span
+          onClick={handleNameClick}
+          style={{
+            display: "flex", alignItems: "center", flex: 1,
+            minWidth: 0, cursor: "pointer",
+          }}
+        >
+          <span style={{ marginRight: 5, fontSize: 13, flexShrink: 0 }}>
+            {isFolder
+              ? (projectFolders?.has(node.path) ? "📋" : contentPath ? "📝" : "📁")
+              : "📄"}
+          </span>
 
-        {/* Name or inline edit */}
-        {isEditing ? (
-          <InlineEdit
-            currentName={node.name}
-            onConfirm={(newName) => onCommitRename(node.path, newName)}
-            onCancel={onCancelEdit}
-          />
-        ) : (
-          <>
+          {isEditing ? (
+            <InlineEdit
+              currentName={node.name}
+              onConfirm={(newName) => onCommitRename(node.path, newName)}
+              onCancel={onCancelEdit}
+            />
+          ) : (
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {node.name}
             </span>
-            {isHovered && (
-              <span style={{ display: "flex", gap: 2, flexShrink: 0, marginLeft: 4 }}>
-                <ActionBtn
-                  title="Nuevo documento"
-                  onClick={(e) => { e.stopPropagation(); onPlusClick(plusTarget); }}
-                >+</ActionBtn>
-                <ActionBtn
-                  title="Más opciones"
-                  onClick={(e) => { e.stopPropagation(); onOpenMenu(node.path, e); }}
-                >···</ActionBtn>
-              </span>
-            )}
-          </>
+          )}
+        </span>
+
+        {/* Hover actions */}
+        {isHovered && !isEditing && (
+          <span style={{ display: "flex", gap: 2, flexShrink: 0, marginLeft: 4 }}>
+            <ActionBtn
+              title="Nuevo documento"
+              onClick={(e) => { e.stopPropagation(); onPlusClick(isFolder ? node.path : parentPath); }}
+            >+</ActionBtn>
+            <ActionBtn
+              title="Más opciones"
+              onClick={(e) => { e.stopPropagation(); onOpenMenu(node.path, e); }}
+            >···</ActionBtn>
+          </span>
         )}
       </div>
 
@@ -257,6 +319,8 @@ function TreeNodeRow({
               hovered={hovered}
               editing={editing}
               creating={creating}
+              dragging={dragging}
+              dragOver={dragOver}
               onToggleCollapse={onToggleCollapse}
               onSetHovered={onSetHovered}
               onSelect={onSelect}
@@ -266,12 +330,18 @@ function TreeNodeRow({
               onCancelEdit={onCancelEdit}
               onCommitCreate={onCommitCreate}
               onCancelCreate={onCancelCreate}
+              onDragStart={onDragStart}
+              onDragOver={onDragOver}
+              onDrop={onDrop}
+              onDragEnd={onDragEnd}
               parentPath={node.path}
+              projectFolders={projectFolders}
             />
           ))}
           {showNewChild && (
             <NewItemRow
               depth={depth + 1}
+              isProject={creating?.kind === "project"}
               onConfirm={onCommitCreate}
               onCancel={onCancelCreate}
             />
@@ -280,7 +350,7 @@ function TreeNodeRow({
       )}
     </>
   );
-}
+});
 
 function ActionBtn({ children, title, onClick }: {
   children: React.ReactNode;
@@ -306,61 +376,63 @@ function ActionBtn({ children, title, onClick }: {
 
 // ── FileTree root ──────────────────────────────────────────────────────────────
 
-export default function FileTree({ files, active, onSelect, onNewFile, onRename, onDelete }: Props) {
+export default function FileTree({ files, active, onSelect, onNewFile, onNewProject, onRename, onDelete, onMove, projectFolders }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [hovered, setHovered] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [creating, setCreating] = useState<CreatingState | null>(null);
   const [editing, setEditing] = useState<EditingState | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
+  const draggedPathRef = useRef<string | null>(null); // reliable source of truth for dragged path
 
-  const tree = buildTree(files);
+  const tree = useMemo(() => buildTree(files), [files]);
 
-  function toggleCollapse(path: string) {
+  const toggleCollapse = useCallback((path: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
       next.has(path) ? next.delete(path) : next.add(path);
       return next;
     });
-  }
+  }, []);
 
-  function openMenu(path: string, e: React.MouseEvent) {
+  const openMenu = useCallback((path: string, e: React.MouseEvent) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setMenu({ path, x: rect.right + 4, y: rect.top });
-  }
+  }, []);
 
-  function startCreating(parentPath: string | null) {
+  const startCreating = useCallback((parentPath: string | null, kind: "document" | "project" = "document") => {
     if (parentPath !== null) {
       setCollapsed((prev) => { const n = new Set(prev); n.delete(parentPath); return n; });
     }
     setEditing(null);
-    setCreating({ parentPath });
+    setCreating({ parentPath, kind });
     setMenu(null);
-  }
+  }, []);
 
-  function commitCreate(name: string) {
-    if (!creating) return;
-    onNewFile(creating.parentPath, name);
-    setCreating(null);
-  }
+  const commitCreate = useCallback((name: string) => {
+    setCreating((c) => {
+      if (!c) return null;
+      if (c.kind === "project") onNewProject?.(c.parentPath, name);
+      else onNewFile(c.parentPath, name);
+      return null;
+    });
+  }, [onNewFile, onNewProject]);
 
-  function cancelCreate() {
-    setCreating(null);
-  }
+  const cancelCreate = useCallback(() => setCreating(null), []);
 
-  function startEditing(path: string, currentName: string) {
+  const startEditing = useCallback((path: string, currentName: string) => {
     setCreating(null);
     setEditing({ path, currentName });
     setMenu(null);
-  }
+  }, []);
 
-  function commitRename(oldPath: string, newName: string) {
+  const commitRename = useCallback((oldPath: string, newName: string) => {
     onRename(oldPath, newName);
     setEditing(null);
-  }
+  }, [onRename]);
 
-  function cancelEdit() {
-    setEditing(null);
-  }
+  const cancelEdit = useCallback(() => setEditing(null), []);
 
   function findNode(path: string, nodes: TreeNode[]): TreeNode | null {
     for (const n of nodes) {
@@ -373,6 +445,32 @@ export default function FileTree({ files, active, onSelect, onNewFile, onRename,
     return null;
   }
 
+  const handleDragOver = useCallback((targetPath: string) => {
+    if (draggedPathRef.current && draggedPathRef.current !== targetPath) {
+      setDragOver(targetPath);
+    }
+  }, []);
+
+  const handleDrop = useCallback((fromPathArg: string, targetPath: string, targetKind: "file" | "folder") => {
+    const fromPath = draggedPathRef.current ?? fromPathArg;
+    draggedPathRef.current = null;
+    setDragging(null);
+    setDragOver(null);
+    if (!fromPath || fromPath === targetPath) return;
+    const toFolder = targetKind === "folder" ? targetPath : targetPath.replace(/\.md$/, "");
+    onMove(fromPath, toFolder);
+  }, [onMove]);
+
+  const handleDragEnd = useCallback(() => {
+    setDragging(null);
+    setDragOver(null);
+  }, []);
+
+  const handleDragStart = useCallback((path: string) => {
+    draggedPathRef.current = path;
+    setDragging(path);
+  }, []);
+
   function buildMenuItems(path: string): MenuItemDef[] {
     const node = findNode(path, tree);
     if (!node) return [];
@@ -380,14 +478,15 @@ export default function FileTree({ files, active, onSelect, onNewFile, onRename,
 
     if (node.kind === "folder") {
       return [
-        { label: "Nuevo documento dentro", action: () => startCreating(node.path) },
-        { label: "Nuevo documento al mismo nivel", action: () => startCreating(parentPath) },
-        { label: "Renombrar carpeta", action: () => startEditing(node.path, node.name) },
-        { label: "Eliminar carpeta", danger: true, action: () => onDelete(node.path, "folder") },
+        { label: "Nuevo documento dentro", action: () => startCreating(node.path, "document") },
+        { label: "Nuevo proyecto dentro", action: () => startCreating(node.path, "project") },
+        { label: "Nuevo documento al mismo nivel", action: () => startCreating(parentPath, "document") },
+        { label: "Renombrar", action: () => startEditing(node.path, node.name) },
+        { label: "Eliminar", danger: true, action: () => onDelete(node.path, "folder") },
       ];
     }
     return [
-      { label: "Nuevo documento al mismo nivel", action: () => startCreating(parentPath) },
+      { label: "Nuevo documento al mismo nivel", action: () => startCreating(parentPath, "document") },
       { label: "Renombrar", action: () => startEditing(node.path, node.name) },
       { label: "Eliminar", danger: true, action: () => onDelete(node.path, "file") },
     ];
@@ -400,8 +499,22 @@ export default function FileTree({ files, active, onSelect, onNewFile, onRename,
         paddingTop: 12, paddingBottom: 12,
         overflowY: "auto", background: "#1e1e1e", color: "#ccc", flexShrink: 0,
       }}
-      // Close menu when clicking the sidebar background
       onClick={() => setMenu(null)}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setDragOver(null);
+        }
+      }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        // Drop on empty sidebar area = move to root
+        e.preventDefault();
+        const from = draggedPathRef.current ?? e.dataTransfer.getData("text/plain");
+        draggedPathRef.current = null;
+        setDragging(null);
+        setDragOver(null);
+        if (from) onMove(from, null);
+      }}
     >
       {/* Header */}
       <div style={{
@@ -411,7 +524,10 @@ export default function FileTree({ files, active, onSelect, onNewFile, onRename,
         <strong style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1, color: "#666" }}>
           Docs
         </strong>
-        <ActionBtn title="Nuevo documento en raíz" onClick={() => startCreating(null)}>+</ActionBtn>
+        <span style={{ display: "flex", gap: 2 }}>
+          <ActionBtn title="Nuevo documento" onClick={() => startCreating(null, "document")}>+</ActionBtn>
+          <ActionBtn title="Nuevo proyecto" onClick={() => startCreating(null, "project")}>📋</ActionBtn>
+        </span>
       </div>
 
       {/* Empty state */}
@@ -431,6 +547,8 @@ export default function FileTree({ files, active, onSelect, onNewFile, onRename,
             hovered={hovered}
             editing={editing}
             creating={creating}
+            dragging={dragging}
+            dragOver={dragOver}
             onToggleCollapse={toggleCollapse}
             onSetHovered={setHovered}
             onSelect={onSelect}
@@ -440,13 +558,18 @@ export default function FileTree({ files, active, onSelect, onNewFile, onRename,
             onCancelEdit={cancelEdit}
             onCommitCreate={commitCreate}
             onCancelCreate={cancelCreate}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onDragEnd={handleDragEnd}
             parentPath={null}
+            projectFolders={projectFolders}
           />
         ))}
 
-        {/* New item at root level */}
+        {/* New item at root */}
         {creating?.parentPath === null && (
-          <NewItemRow depth={0} onConfirm={commitCreate} onCancel={cancelCreate} />
+          <NewItemRow depth={0} isProject={creating.kind === "project"} onConfirm={commitCreate} onCancel={cancelCreate} />
         )}
       </div>
 

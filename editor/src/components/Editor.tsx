@@ -8,10 +8,12 @@ interface Props {
   onChange: (val: string) => void;
   onSave: () => void;
   config: EditorConfig;
+  editorRef?: React.MutableRefObject<editor.IStandaloneCodeEditor | null>;
 }
 
-export default function Editor({ content, onChange, onSave, config }: Props) {
+export default function Editor({ content, onChange, onSave, config, editorRef }: Props) {
   function handleMount(editorInstance: editor.IStandaloneCodeEditor) {
+    if (editorRef) editorRef.current = editorInstance;
     editorInstance.addCommand(
       2048 | 49, // KeyMod.CtrlCmd | KeyCode.KeyS
       onSave
